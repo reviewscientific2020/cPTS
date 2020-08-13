@@ -5,12 +5,14 @@
 #include <string>
 #include "date.h"
 #include <vector>
+#include <math.h>  
 
 //Additional libraries
 #include <mio/mmap.hpp>
 #include "anyoption.h"
 
 
+//What is this?
 
 //Declaring methods
 int handle_error(const std::error_code& error);
@@ -49,7 +51,6 @@ const std::vector<std::string> explode(const std::string& s, const char& c)
 int main(int argc, char** argv)
 {
 
-
 	//TimeRange is switch to limit timestamp comparisons.
 	//InRange is the bool which tests it.  -t flag will set it to true.
 	bool timeRange = false;
@@ -67,10 +68,11 @@ int main(int argc, char** argv)
 	opt->setFlag("help", 'h');
 	opt->setFlag("timeRange", 't');
 	//opt->setOption("data");
+	
 	opt->processCommandArgs(argc, argv);
 
 	if (opt->getFlag("help") || opt->getFlag('h')) {
-		printf("The arguments for this program are the required arguments:\n\n <disk image location> <timestamp size> <search threshold> <number of timestamps that should be the same>\n\n And the optional arguments:\n\n <min date> <max date> <-t>");
+		printf("The arguments for this program are the required arguments:\n\n<disk image location> <timestamp size> <search threshold> <number of timestamps that should be the same>\n\nAnd the optional arguments:\n\n<min date> <max date> <-t>\n\n-t is for limiting matches between NTFS dates.\n");
 		opt->printAutoUsage();
 		return 0;
 	}
@@ -79,6 +81,7 @@ int main(int argc, char** argv)
 	if (opt->getFlag('t')) {
 		timeRange = true;
 	}
+	
 
 	if(argv[1] == 0 || argv[2] == 0 || argv[3] == 0 || argv[4] == 0){
 		std::cout << "Missing mandatory arguments, see -help for details." << std::endl;
@@ -92,7 +95,6 @@ int main(int argc, char** argv)
 	std::ofstream myfile;
 	myfile.open("cPTS.txt");
 
-
 	//Memory mapping with c++
 	std::error_code error;
 
@@ -103,19 +105,17 @@ int main(int argc, char** argv)
 	int threshold = std::stoi(argv[3]);
 	int mcThresh = std::stoi(argv[4]);
 	
-
-	
-
 	//Declare min/max variables just in case.
 	long long int minHold;
 	long long int maxHold;
 
-	//If the time range is set, then we need to obtain them in an 8 byte representation.
-	
+
+	//If the time range is set, then we need to obtain them in an 8 byte representation.	
 	//This is to set time range
+	//Check later for bugs
 	if ((argv[5] != 0) && (timeRange == true)) {
-		std::string minString = argv[5];
-		std::string maxString = argv[6];
+		std::string minString = argv[6];  //was 5
+		std::string maxString = argv[7];  //was 6
 
 		//Obtain vectors of the dates.
 		std::vector<std::string> minVec{ explode(minString, '-') };
@@ -125,7 +125,6 @@ int main(int argc, char** argv)
 		//Setting converting min/max dates assuming Unix/NTFS/FAT.
 		//FAT timestamps is a work in progress
 		if (searchSize == 2) {
-
 			//Work in progress
 
 			std::cout << "work in progress"<< std::endl;
@@ -158,12 +157,18 @@ int main(int argc, char** argv)
 	
 	
 	const size_t OneGigabyte = 1 << 30;
-	
-	//We do not suppport less than a GB with this at the moment.
-	mio::mmap_source ro_mmap;
-	ro_mmap.map(inputDD, 0, OneGigabyte, error);
-	if (error) { return handle_error(error); }
 
+	mio::mmap_source ro_mmap;
+	
+	if(mSize < OneGigabyte){
+		ro_mmap.map(inputDD, error);
+		if (error) { return handle_error(error); }
+	}else{
+		
+		ro_mmap.map(inputDD, 0, OneGigabyte, error);
+		if (error) { return handle_error(error); }
+	
+	}
 
 	//Variables for timestamps initialization
 	unsigned long long search = 0;
@@ -200,14 +205,18 @@ int main(int argc, char** argv)
 	//For below conditionals
 	bool tripBit = true;
 	
+		
 	//Loops through all bytes in the images, while flipping through memory pages
+	//Increasing by searchsize.
 	for (unsigned long long qq = 0; qq < (mSize - threshold); qq += searchSize) {
 
-		//This is so we don't keep accessing the next conditional statement.
-		if(qq % OneGigabyte == 0){
+		//This should fix size issue
+		if((qq % OneGigabyte >= 0)  && (qq % OneGigabyte <= threshold)){
 			tripBit = true;
-		}
+		} 
 
+		//This is the counter in the GRAND scheme of things (not relative per GB).  
+		//Basically, if we are in the last 64K? bytes, we should do something.
 		if (((qq % OneGigabyte) > (OneGigabyte - 0x1000)) && tripBit) {
 
 			//If its the last chunk, we need smaller than a GB.
@@ -218,7 +227,10 @@ int main(int argc, char** argv)
 				ro_mmap.map(inputDD, qq, OneGigabyte, error);
 				if (error) { return handle_error(error); }
 			}
+		
 			gbqq = 0;
+			
+			std::cout << GBCounter << std::endl;
 			
 			GBCounter += 1;
 			tripBit = false;
@@ -357,14 +369,13 @@ int main(int argc, char** argv)
 			exit(1);
 		}
 
-
 		//If the time flag was set, we need to check if the potential timestamp falls between these dates.
 		if (timeRange) {
 			inRange = ((minHold <= search) & (maxHold >= search));
 		}
 
-		//Continue if not repeated sequences of bytes and in range (if enabled).
-		if (!repeat && inRange) {
+		//Continue if not repeated sequences of bytes and in range (if enabled).  Basically, prefix shouldn't be 0.
+		if (!repeat && inRange ) {
 
 			//reset matchCount
 			matchCount = 0;
@@ -383,6 +394,7 @@ int main(int argc, char** argv)
 					testBlock = ((unsigned long long)(((unsigned char)ro_mmap[jj]))) | (((unsigned long long)(((unsigned char)ro_mmap[jj + 1]))) << 8);
 				}
 
+			
 				//If they are the same, increase matchcount.
 				if (search == testBlock) {
 					matchCount += 1;
@@ -402,7 +414,7 @@ int main(int argc, char** argv)
 					qq += threshold - searchSize;
 					gbqq += threshold - searchSize;
 				}
-
+			
 			}
 		}
 
@@ -410,7 +422,6 @@ int main(int argc, char** argv)
 		gbqq += searchSize;
 
 	}
-
 
 	//close write file.
 	myfile.close();
